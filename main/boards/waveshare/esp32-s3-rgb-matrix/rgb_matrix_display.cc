@@ -192,6 +192,7 @@ CustomMatrixDisplay::CustomMatrixDisplay(int width, int height) : LvglDisplay() 
     hub75_config.shift_driver = HUB75_SHIFT_DRIVER;
     hub75_config.layout_cols = HUB75_CHAIN_COLUMNS;
     hub75_config.layout_rows = HUB75_CHAIN_ROWS;
+    hub75_config.layout = HUB75_PANEL_LAYOUT;
 
     hub75_config.pins.r1 = static_cast<int>(HUB75_R1);
     hub75_config.pins.g1 = static_cast<int>(HUB75_G1);

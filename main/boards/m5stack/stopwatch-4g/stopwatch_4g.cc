@@ -7,6 +7,8 @@
 #include "button.h"
 #include "M5IOE1.h"
 #include "M5PM1.h"
+#include "mcp_server.h"
+#include "settings.h"
 #include "config.h"
 #include "assets/lang_config.h"
 #include <esp_log.h>
@@ -147,6 +149,11 @@ private:
 
         // setBoostEnable(true) 打开 M5PM1 的 5V 升压 -> Grove 口对外供电 -> 4G 模组上电
         pmic_.setChargeEnable(true);
+        // 每次启动给 4G 模组做一次冷复位: Grove 5V(BOOST/5VINOUT) 断电再上电.
+        // 软复位(按 EN / 烧录后)时模组仍带电, 烧录期 UART 杂波易使模组 AT 解析器卡死 ->
+        // 开机一直停在"检测模组..."直到 30 次重试超时; 冷复位可稳定恢复(等同整机断电).
+        pmic_.setBoostEnable(false);
+        vTaskDelay(pdMS_TO_TICKS(600));
         pmic_.setBoostEnable(true);
         pmic_.pinMode(PMIC_PIN_CHARGE_STATE, INPUT);
         pmic_.pinMode(PMIC_PIN_CHARGE_PROG, OUTPUT);
@@ -269,6 +276,81 @@ private:
         });
     }
 
+    static bool IsValidMobile(const std::string& n) {
+        if (n.size() != 11 || n[0] != '1') {
+            return false;
+        }
+        for (char c : n) {
+            if (c < '0' || c > '9') {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    void InitializeTools() {
+        auto& mcp_server = McpServer::GetInstance();
+
+        mcp_server.AddTool(
+            "self.sms.send",
+            "通过4G模组发送短信。参数 text 为短信内容；number 为接收号码，必须是1开头的11位数字。"
+            "若不提供 number，则发送到已设置的默认短信号码。仅在4G网络下可用。",
+            PropertyList({
+                Property("text", kPropertyTypeString),
+                Property("number", kPropertyTypeString, std::string("")),
+            }),
+            [this](const PropertyList& properties) -> ReturnValue {
+                std::string text = properties["text"].value<std::string>();
+                std::string number = properties["number"].value<std::string>();
+                if (text.empty()) {
+                    return std::string("短信内容为空，未发送");
+                }
+                if (number.empty()) {
+                    Settings settings("sms", false);
+                    number = settings.GetString("default_number", "");
+                }
+                if (number.empty()) {
+                    return std::string("未设置默认短信号码。请先说：把默认短信号码设为1开头的11位号码");
+                }
+                if (!IsValidMobile(number)) {
+                    return std::string("号码不合法：必须是1开头的11位数字");
+                }
+                if (GetNetworkType() != NetworkType::ML307) {
+                    return std::string("当前不是4G网络，无法发送短信，请双击按键A切换到4G后再试");
+                }
+                bool ok = static_cast<Ml307Board&>(GetCurrentBoard()).SendSms(number, text);
+                return std::string(ok ? ("短信已发送给 " + number) : "短信发送失败，请稍后重试");
+            });
+
+        mcp_server.AddTool(
+            "self.sms.set_default_number",
+            "设置默认短信号码，以后发短信不指定号码时就用它，并保存到设备（断电不丢）。"
+            "参数 number 必须是1开头的11位数字。",
+            PropertyList({Property("number", kPropertyTypeString)}),
+            [this](const PropertyList& properties) -> ReturnValue {
+                std::string number = properties["number"].value<std::string>();
+                if (!IsValidMobile(number)) {
+                    return std::string("号码不合法：必须是1开头的11位数字");
+                }
+                Settings settings("sms", true);
+                settings.SetString("default_number", number);
+                return std::string("已把默认短信号码设为 " + number);
+            });
+
+        mcp_server.AddTool(
+            "self.sms.get_default_number",
+            "获取当前已设置的默认短信号码。",
+            PropertyList(),
+            [this](const PropertyList&) -> ReturnValue {
+                Settings settings("sms", false);
+                std::string number = settings.GetString("default_number", "");
+                if (number.empty()) {
+                    return std::string("尚未设置默认短信号码");
+                }
+                return std::string("默认短信号码是 " + number);
+            });
+    }
+
 public:
     M5StackStopwatch4GBoard()
         : DualNetworkBoard(ML307_TX_PIN, ML307_RX_PIN),
@@ -281,6 +363,7 @@ public:
         InitializeSpi();
         InitializeDisplay();
         InitializeButtons();
+        InitializeTools();
     }
 
     AudioCodec* GetAudioCodec() override {

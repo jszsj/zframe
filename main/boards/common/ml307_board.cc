@@ -20,6 +20,129 @@ static constexpr int NETWORK_REG_MAX_RETRIES = 6;
 Ml307Board::Ml307Board(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t dtr_pin) : tx_pin_(tx_pin), rx_pin_(rx_pin), dtr_pin_(dtr_pin) {
 }
 
+namespace {
+
+bool SmsTextIsAscii(const std::string& s) {
+    for (unsigned char c : s) {
+        if (c >= 0x80) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void AppendUcs2Hex(std::string& out, unsigned int cp) {
+    const char* hex = "0123456789ABCDEF";
+    if (cp > 0xFFFF) {
+        unsigned int v = cp - 0x10000;
+        unsigned int hi = 0xD800 + (v >> 10);
+        unsigned int lo = 0xDC00 + (v & 0x3FF);
+        out.push_back(hex[(hi >> 12) & 0xF]);
+        out.push_back(hex[(hi >> 8) & 0xF]);
+        out.push_back(hex[(hi >> 4) & 0xF]);
+        out.push_back(hex[hi & 0xF]);
+        out.push_back(hex[(lo >> 12) & 0xF]);
+        out.push_back(hex[(lo >> 8) & 0xF]);
+        out.push_back(hex[(lo >> 4) & 0xF]);
+        out.push_back(hex[lo & 0xF]);
+    } else {
+        out.push_back(hex[(cp >> 12) & 0xF]);
+        out.push_back(hex[(cp >> 8) & 0xF]);
+        out.push_back(hex[(cp >> 4) & 0xF]);
+        out.push_back(hex[cp & 0xF]);
+    }
+}
+
+std::string Utf8ToUcs2Hex(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() * 4);
+    size_t i = 0;
+    while (i < s.size()) {
+        unsigned char c = static_cast<unsigned char>(s[i]);
+        unsigned int cp = 0;
+        int n = 0;
+        if (c < 0x80) {
+            cp = c;
+            n = 1;
+        } else if ((c >> 5) == 0x6) {
+            cp = c & 0x1F;
+            n = 2;
+        } else if ((c >> 4) == 0xE) {
+            cp = c & 0x0F;
+            n = 3;
+        } else if ((c >> 3) == 0x1E) {
+            cp = c & 0x07;
+            n = 4;
+        } else {
+            cp = 0xFFFD;
+            n = 1;
+        }
+        if (i + n > s.size()) {
+            cp = 0xFFFD;
+            n = static_cast<int>(s.size() - i);
+        }
+        for (int k = 1; k < n; ++k) {
+            cp = (cp << 6) | (static_cast<unsigned char>(s[i + k]) & 0x3F);
+        }
+        i += n;
+        AppendUcs2Hex(out, cp);
+    }
+    return out;
+}
+
+}  // namespace
+
+bool Ml307Board::SendSms(const std::string& number, const std::string& text) {
+    if (modem_ == nullptr) {
+        ESP_LOGE(TAG, "SendSms: modem not ready");
+        return false;
+    }
+    auto at = modem_->GetAtUart();
+    if (!at) {
+        ESP_LOGE(TAG, "SendSms: at uart null");
+        return false;
+    }
+
+    if (!at->SendCommand("AT+CMGF=1", 3000)) {
+        ESP_LOGE(TAG, "SendSms: AT+CMGF failed");
+        return false;
+    }
+
+    bool sent = false;
+    const bool ascii = SmsTextIsAscii(text);
+    if (ascii) {
+        at->SendCommand("AT+CSCS=\"GSM\"", 3000);
+        at->SendCommand("AT+CSMP=17,167,0,0", 3000);
+        std::string body = text;
+        body.push_back('\x1A');
+        if (at->SendCommandWithData("AT+CMGS=\"" + number + "\"", 15000, true, body.data(),
+                                    body.size())) {
+            sent = true;
+        }
+    } else {
+        at->SendCommand("AT+CSCS=\"UCS2\"", 3000);
+        at->SendCommand("AT+CSMP=17,167,0,8", 3000);
+        std::string body = Utf8ToUcs2Hex(text);
+        body.push_back('\x1A');
+        if (at->SendCommandWithData("AT+CMGS=\"" + Utf8ToUcs2Hex(number) + "\"", 15000, true,
+                                    body.data(), body.size())) {
+            sent = true;
+        }
+        if (!sent) {
+            // 少数模组固件在 UCS2 模式下只接受纯数字 DA，回退一次
+            if (at->SendCommandWithData("AT+CMGS=\"" + number + "\"", 15000, true, body.data(),
+                                        body.size())) {
+                sent = true;
+            }
+        }
+    }
+
+    std::string resp = at->GetResponse();
+    ESP_LOGI(TAG, "SendSms(%s) ascii=%d sent=%d resp=%s", number.c_str(), ascii ? 1 : 0,
+             sent ? 1 : 0, resp.c_str());
+    return sent && resp.find("+CMGS:") != std::string::npos;
+}
+
 std::string Ml307Board::GetBoardType() {
     return "ml307";
 }

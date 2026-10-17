@@ -2,6 +2,7 @@
 #define ML307_BOARD_H
 
 #include <memory>
+#include <string>
 #include <at_modem.h>
 #include "board.h"
 
@@ -26,6 +27,12 @@ protected:
 public:
     Ml307Board(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t dtr_pin = GPIO_NUM_NC);
     virtual std::string GetBoardType() override;
+
+    // 通过 4G 模组发送短信（走共享 AT UART，自动处理 '>' 提示符）
+    // number: 纯数字号码；text: UTF-8 文本（ASCII 走 GSM，含中文自动走 UCS2）
+    // 返回 true 表示模组回 +CMGS 发送成功
+    bool SendSms(const std::string& number, const std::string& text);
+
     virtual void StartNetwork() override;
     virtual void SetNetworkEventCallback(NetworkEventCallback callback) override;
     virtual NetworkInterface* GetNetwork() override;

@@ -362,6 +362,9 @@ choice BOARD_TYPE
     config BOARD_TYPE_M5STACK_STOPWATCH
         bool "M5Stack Stopwatch"
         depends on IDF_TARGET_ESP32S3
+    config BOARD_TYPE_M5STACK_STOPWATCH_4G
+        bool "M5Stack Stopwatch 4G (ML307 via Grove)"
+        depends on IDF_TARGET_ESP32S3
     config BOARD_TYPE_M5STACK_CORE_TAB5
         bool "M5Stack Tab5"
         depends on IDF_TARGET_ESP32P4
